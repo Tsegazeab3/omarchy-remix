@@ -1,26 +1,29 @@
 #!/usr/bin/env bash
-# Open a local .docx in Word for the web: upload to OneDrive, then open its OneDrive URL.
-# Fast path: talks to Microsoft Graph directly with curl (one GET + one PUT) instead of
-# spawning rclone twice (~2.5 s each). rclone is only used to refresh an expired token.
-# Original rclone-based version: word-online.bak-rclone
-# Usage: word-online FILE [FILE...]
+# Open a local .docx in Word for the web, and pull the edits back.
+#   word-online FILE [FILE...]       upload (unless OneDrive has newer edits) and open in the browser
+#   word-online --pullfile FILE      download the OneDrive copy over FILE if it was edited online
+#   word-online --pullfolder DIR     same for every Office file under DIR (recursive)
+#
+# Copies live in OneDrive under $WORD_ONLINE_DIR (default: WordOnline/), keyed by file name.
+# Talks to Microsoft Graph with curl; rclone is only used to refresh an expired token.
+# Before a pull overwrites a file, the old version is kept in ~/.local/state/word-online/backups/.
+# If both the local file and the online copy changed, the online one is saved next to it as
+# "NAME (online).docx" instead of overwriting anything.
 set -uo pipefail
 REMOTE="${WORD_ONLINE_REMOTE:-onedrive}"
 DIR="${WORD_ONLINE_DIR:-WordOnline}"
 GRAPH="https://graph.microsoft.com/v1.0/me/drive/root"
+STATE="${XDG_STATE_HOME:-$HOME/.local/state}/word-online"
+SYNCED="$STATE/synced"          # lines: <remote path>\t<remote lastModifiedDateTime at last sync>
+BACKUPS="$STATE/backups"
+mkdir -p "$STATE" "$BACKUPS"; touch "$SYNCED"
 
-note() { notify-send -a "Word Online" "$@" 2>/dev/null || echo "$*"; }
+note() { notify-send -a "Word Online" "$@" 2>/dev/null; echo "$*"; }
 get_token() { rclone config dump | jq -r --arg r "$REMOTE" '.[$r].token // empty' | jq -r '.access_token // empty'; }
 refresh_token() { rclone lsf --max-depth 1 "$REMOTE:" >/dev/null 2>&1; token=$(get_token); }
 open_url() { [ -n "${WORD_ONLINE_NO_OPEN:-}" ] && { echo "$1"; return; }; xdg-open "$1" >/dev/null 2>&1 & }
 
-token=$(get_token)
-if [ -z "$token" ]; then
-  note "OneDrive not connected" "Run: rclone config create $REMOTE onedrive"
-  exit 1
-fi
-
-# graph METHOD URL [curl args...] -> body on stdout, HTTP code in $code; retries once on 401
+# graph METHOD URL [curl args...] -> body in $body, HTTP code in $code; retries once on 401
 graph() {
   local method=$1 url=$2; shift 2
   local out
@@ -32,28 +35,118 @@ graph() {
   done
 }
 
-for f in "$@"; do
-  name=$(basename "$f")
-  path=$(jq -rn --arg p "$DIR/$name" '$p | split("/") | map(@uri) | join("/")')
+remote_path() { jq -rn --arg p "$DIR/$(basename "$1")" '$p | split("/") | map(@uri) | join("/")'; }
+synced_get() { awk -F'\t' -v k="$1" '$1==k {v=$2} END {print v}' "$SYNCED"; }
+synced_set() { { grep -v -F "$1"$'\t' "$SYNCED"; printf '%s\t%s\n' "$1" "$2"; } > "$SYNCED.tmp"; mv "$SYNCED.tmp" "$SYNCED"; }
+epoch() { date -d "$1" +%s; }
 
-  # One request: does a copy exist, is it newer, and what is its web URL?
-  graph GET "$GRAPH:/$path?\$select=webUrl,fileSystemInfo,lastModifiedDateTime"
-  url=""
+# Metadata of the OneDrive copy of $1 -> $code, $remote_mtime, $web_url
+remote_info() {
+  graph GET "$GRAPH:/$(remote_path "$1")?\$select=webUrl,lastModifiedDateTime"
+  remote_mtime=""; web_url=""
   if [ "$code" = 200 ]; then
-    remote_mtime=$(jq -r '.fileSystemInfo.lastModifiedDateTime // .lastModifiedDateTime // empty' <<<"$body")
-    if [ -n "$remote_mtime" ] && [ "$(date -d "$remote_mtime" +%s)" -gt "$(stat -c %Y "$f")" ]; then
-      note "Opening the OneDrive copy" "$name was edited online, so it was not overwritten"
-      url=$(jq -r '.webUrl // empty' <<<"$body")
+    remote_mtime=$(jq -r '.lastModifiedDateTime // empty' <<<"$body")
+    web_url=$(jq -r '.webUrl // empty' <<<"$body")
+  fi
+}
+
+# Was the OneDrive copy edited since we last synced it?
+remote_changed() { # file
+  local last; last=$(synced_get "$(remote_path "$1")")
+  if [ -n "$last" ]; then [ "$remote_mtime" != "$last" ]
+  else [ "$(epoch "$remote_mtime")" -gt "$(stat -c %Y "$1")" ]; fi   # never synced by this version
+}
+
+# Was the local file edited since we last synced it?
+local_changed() { # file
+  local last; last=$(synced_get "$(remote_path "$1")")
+  [ -n "$last" ] && [ "$(stat -c %Y "$1")" -gt "$(epoch "$last")" ]
+}
+
+download_to() { # file dest
+  local url="$GRAPH:/$(remote_path "$1"):/content" http
+  for attempt in 1 2; do
+    http=$(curl -sS -L -H "Authorization: Bearer $token" -o "$2" -w '%{http_code}' "$url")
+    if [ "$http" = 401 ] && [ $attempt = 1 ]; then refresh_token; continue; fi
+    break
+  done
+  [ "$http" = 200 ] && [ -s "$2" ]
+}
+
+pulled=0; skipped=0; conflicts=0; failed=0
+pull_one() { # file
+  local f=$1 name rp tmp
+  name=$(basename "$f"); rp=$(remote_path "$f")
+  remote_info "$f"
+  if [ "$code" = 404 ]; then skipped=$((skipped+1)); echo "  not on OneDrive: $f"; return; fi
+  if [ "$code" != 200 ]; then failed=$((failed+1)); echo "  error $code: $f"; return; fi
+  if ! remote_changed "$f"; then skipped=$((skipped+1)); echo "  up to date: $f"; return; fi
+
+  tmp=$(mktemp "$STATE/dl.XXXXXX")
+  if ! download_to "$f" "$tmp"; then rm -f "$tmp"; failed=$((failed+1)); echo "  download failed: $f"; return; fi
+
+  if local_changed "$f"; then
+    local other="${f%.*} (online).${f##*.}"
+    mv "$tmp" "$other"; touch -d "$remote_mtime" "$other"
+    conflicts=$((conflicts+1)); echo "  BOTH CHANGED, kept both: $other"
+  else
+    cp -p "$f" "$BACKUPS/$(date +%Y%m%d-%H%M%S)-$name"
+    mv "$tmp" "$f"; touch -d "$remote_mtime" "$f"
+    pulled=$((pulled+1)); echo "  pulled: $f"
+  fi
+  synced_set "$rp" "$remote_mtime"
+}
+
+pull_summary() {
+  local msg="$pulled pulled, $skipped unchanged"
+  [ $conflicts -gt 0 ] && msg="$msg, $conflicts kept both (see \"(online)\" files)"
+  [ $failed -gt 0 ] && msg="$msg, $failed failed"
+  note "Word Online pull" "$msg"
+}
+
+token=$(get_token)
+if [ -z "$token" ]; then
+  note "OneDrive not connected" "Run: rclone config create $REMOTE onedrive"
+  exit 1
+fi
+
+case "${1:-}" in
+  --pullfile)
+    shift; [ $# -ge 1 ] || { echo "Usage: word-online --pullfile FILE [FILE...]" >&2; exit 1; }
+    for f in "$@"; do [ -f "$f" ] && pull_one "$f" || echo "  no such file: $f"; done
+    pull_summary; exit 0 ;;
+  --pullfolder)
+    d="${2:-.}"; [ -d "$d" ] || { echo "No such folder: $d" >&2; exit 1; }
+    while IFS= read -r -d '' f; do pull_one "$f"
+    done < <(find "$d" -type f \( -iname '*.docx' -o -iname '*.doc' -o -iname '*.xlsx' -o -iname '*.pptx' \) ! -name '~$*' ! -name '* (online).*' -print0)
+    pull_summary; exit 0 ;;
+  -h|--help|"")
+    sed -n 2,11p "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+esac
+
+for f in "$@"; do
+  name=$(basename "$f"); rp=$(remote_path "$f")
+  remote_info "$f"
+  url=""
+  if [ "$code" = 200 ] && remote_changed "$f"; then
+    # Never upload over online edits. Open them instead; --pullfile brings them home.
+    if local_changed "$f"; then
+      note "Both copies changed" "$name was edited here AND online. Opening the online one; run word-online --pullfile to get it as \"(online)\" next to yours."
+    else
+      note "Opening the OneDrive copy" "$name was edited online. Bring it back with: word-online --pullfile"
     fi
+    url=$web_url
   fi
 
   if [ -z "$url" ]; then
     note "Uploading" "$name"
-    graph PUT "$GRAPH:/$path:/content" --data-binary @"$f" -H "Content-Type: application/octet-stream"
+    graph PUT "$GRAPH:/$rp:/content" --data-binary @"$f" -H "Content-Type: application/octet-stream"
     if [ "$code" != 200 ] && [ "$code" != 201 ]; then
       note "Upload failed ($code)" "$name"; continue
     fi
     url=$(jq -r '.webUrl // empty' <<<"$body")
+    synced_set "$rp" "$(jq -r '.lastModifiedDateTime // empty' <<<"$body")"
+    touch -d "$(jq -r '.lastModifiedDateTime' <<<"$body")" "$f" 2>/dev/null || true
   fi
 
   if [ -n "$url" ]; then

@@ -1,0 +1,116 @@
+#!/usr/bin/python3
+import os
+import sys
+import json
+import subprocess
+import urllib.request
+import urllib.parse
+
+def get_file_icon(path):
+    if os.path.isdir(path):
+        return "\udb80\udf83"  # folder icon (󰉋)
+    ext = os.path.splitext(path)[1].lower()
+    if ext in [".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".bmp"]:
+        return "\udb80\udce9"  # image (󰋩)
+    if ext in [".mp3", ".flac", ".wav", ".ogg", ".m4a", ".aac"]:
+        return "\udb80\udf86"  # audio (󰎆)
+    if ext in [".mp4", ".mkv", ".webm", ".avi", ".mov"]:
+        return "\udb80\udf67"  # video (󰕧)
+    if ext in [".pdf", ".doc", ".docx", ".odt", ".txt", ".md"]:
+        return "\udb80\ude19"  # document (󰈙)
+    if ext in [".py", ".js", ".ts", ".jsx", ".tsx", ".lua", ".c", ".cpp", ".h", ".rs", ".go", ".sh", ".json", ".toml", ".yaml", ".yml", ".html", ".css", ".qml"]:
+        return "\udb80\udf69"  # code (󰅩)
+    if ext in [".zip", ".tar", ".gz", ".bz2", ".xz", ".7z", ".rar"]:
+        return "\udb80\udf8a"  # archive (󰎊)
+    return "\udb80\ude14"      # generic file (󰈔)
+
+def main():
+    if len(sys.argv) < 2:
+        sys.exit(0)
+
+    query = sys.argv[1].strip()
+    if not query:
+        sys.exit(0)
+
+    home = os.path.expanduser("~")
+    rows = []
+
+    # 1. File Search with fd
+    try:
+        cmd = [
+            "fd", "-H",
+            "--max-results", "6",
+            "--one-file-system",
+            "--exclude", ".cache",
+            "--exclude", ".git",
+            "--exclude", "node_modules",
+            "--exclude", ".local/share/Trash",
+            "--exclude", "GoogleDrive",
+            query,
+            home
+        ]
+        res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, timeout=1.5)
+        lines = [l.strip() for l in res.stdout.split("\n") if l.strip()]
+        for p in lines:
+            name = os.path.basename(p)
+            rel = p.replace(home, "~")
+            icon = get_file_icon(p)
+            # Quote path for shell
+            safe_p = p.replace("'", "'\\''")
+            rows.append({
+                "itemId": "file." + p,
+                "kind": "leaf",
+                "icon": icon,
+                "iconFont": "",
+                "appIcon": "",
+                "appId": "",
+                "label": name,
+                "target": "",
+                "detail": rel,
+                "path": "Files",
+                "childCount": 0,
+                "action": f"xdg-open '{safe_p}'",
+                "provider": "",
+                "score": 1000,
+                "section": "drilldown"
+            })
+    except Exception:
+        pass
+
+    # 2. Web search suggestions (fetch if query has >= 3 chars)
+    if len(query) >= 3:
+        try:
+            url = f"https://duckduckgo.com/ac/?q={urllib.parse.quote(query)}&type=list"
+            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+            with urllib.request.urlopen(req, timeout=0.6) as resp:
+                data = json.loads(resp.read().decode())
+                if len(data) > 1 and isinstance(data[1], list):
+                    for sug in data[1][:3]:
+                        if sug.lower() != query.lower():
+                            safe_q = urllib.parse.quote(sug)
+                            search_url = f"https://www.google.com/search?q={safe_q}"
+                            rows.append({
+                                "itemId": "web.suggest." + sug,
+                                "kind": "leaf",
+                                "icon": "\udb81\uddb9",  # web globe (󰖟)
+                                "iconFont": "",
+                                "appIcon": "",
+                                "appId": "",
+                                "label": sug,
+                                "target": "",
+                                "detail": "Search online in default browser",
+                                "path": "Web Search",
+                                "childCount": 0,
+                                "action": f"omarchy launch browser '{search_url}'",
+                                "provider": "",
+                                "score": 2000,
+                                "section": "drilldown"
+                            })
+        except Exception:
+            pass
+
+    # Output one single-line JSON array
+    print(json.dumps(rows))
+
+if __name__ == "__main__":
+    main()

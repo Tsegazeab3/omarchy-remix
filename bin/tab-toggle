@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+# ==============================================================================
+# tab-toggle: Toggle focus between PC keyboard and Samsung Tab keyboard
+# ==============================================================================
+
+CACHE_FILE="/tmp/last_focused_pc_window"
+
+ACTIVE_JSON=$(hyprctl activewindow -j 2>/dev/null)
+ACTIVE_TITLE=$(echo "$ACTIVE_JSON" | jq -r '.title // ""')
+ACTIVE_ADDR=$(echo "$ACTIVE_JSON" | jq -r '.address // ""')
+
+if echo "$ACTIVE_TITLE" | grep -qi "Samsung-Tab"; then
+  # Currently focused on Samsung Tab -> Switch back to PC window
+  TARGET_ADDR=""
+  if [[ -f "$CACHE_FILE" ]]; then
+    SAVED_ADDR=$(cat "$CACHE_FILE")
+    # Verify saved window still exists
+    if hyprctl clients -j 2>/dev/null | jq -e --arg addr "$SAVED_ADDR" '.[] | select(.address == $addr)' >/dev/null 2>&1; then
+      TARGET_ADDR="$SAVED_ADDR"
+    fi
+  fi
+
+  if [[ -n "$TARGET_ADDR" ]]; then
+    hyprctl dispatch "hl.dsp.focus({ window = \"address:$TARGET_ADDR\" })" >/dev/null 2>&1
+  else
+    hyprctl dispatch "hl.dsp.window.cycle_next()" >/dev/null 2>&1
+  fi
+  command -v omarchy-notification-send >/dev/null 2>&1 && \
+    omarchy-notification-send -u low "PC Keyboard Active"
+else
+  # Currently focused on PC -> Save address and switch to Samsung Tab
+  if [[ -n "$ACTIVE_ADDR" && "$ACTIVE_ADDR" != "null" ]]; then
+    echo "$ACTIVE_ADDR" > "$CACHE_FILE"
+  fi
+
+  TAB_ADDR=$(hyprctl clients -j 2>/dev/null | jq -r '.[] | select(.title | test("Samsung-Tab"; "i")) | .address' | head -n1)
+
+  if [[ -n "$TAB_ADDR" ]]; then
+    hyprctl dispatch "hl.dsp.focus({ window = \"address:$TAB_ADDR\" })" >/dev/null 2>&1
+    command -v omarchy-notification-send >/dev/null 2>&1 && \
+      omarchy-notification-send -u low "Samsung Tab Keyboard Active"
+  else
+    # Not running yet: auto-launch tab-keyboard in background
+    command -v omarchy-notification-send >/dev/null 2>&1 && \
+      omarchy-notification-send -u low "Starting Samsung Tab Keyboard..."
+    nohup "$HOME/.local/bin/tab-keyboard" >/tmp/tab-keyboard.log 2>&1 &
+  fi
+fi

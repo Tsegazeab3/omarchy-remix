@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# Aider Scratchpad for file editing
+set -eo pipefail
+clear
+echo -e "\033[1;36m╭─────────────────────────────────────────────────────────────╮\033[0m"
+echo -e "\033[1;36m│\033[0m   \033[1;35m🛠️  AI File Editor\033[0m       \033[0;90m•\033[0m   \033[1;37mAider + Qwen\033[0m                    \033[1;36m│\033[0m"
+echo -e "\033[1;36m│\033[0m   \033[0;90mFor changing files, calendar, and to-do lists.\033[0m            \033[1;36m│\033[0m"
+echo -e "\033[1;36m╰─────────────────────────────────────────────────────────────╯\033[0m"
+echo ""
+cd "${OBSIDIAN_VAULT:-$HOME/Documents/Obsidian Vault}"
+exec ~/.local/bin/aider

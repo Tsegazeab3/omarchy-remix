@@ -1,0 +1,90 @@
+#!/usr/bin/env bash
+# Script to mount the Storage partition containing Downloads, go, tempe, etc.
+set -euo pipefail
+
+UUID="96DC57B5DC578E7D"
+DEV="/dev/disk/by-uuid/$UUID"
+
+TARGET_USER="${SUDO_USER:-$USER}"
+TARGET_UID=$(id -u "$TARGET_USER")
+TARGET_GID=$(id -g "$TARGET_USER")
+EXPECTED_MOUNT="/run/media/$TARGET_USER/Storage"
+
+if [ ! -e "$DEV" ]; then
+    echo "Error: Storage partition ($UUID) not found." >&2
+    exit 1
+fi
+
+FORCE_RW=false
+if [ "${1:-}" = "--force-rw" ] || [ "${1:-}" = "-f" ]; then
+    FORCE_RW=true
+fi
+
+# Check existing mount
+if findmnt -rn -S "$DEV" >/dev/null 2>&1; then
+    MOUNTPOINT=$(findmnt -rn -o TARGET -S "$DEV")
+    OPTIONS=$(findmnt -rn -o OPTIONS -S "$DEV")
+    
+    # If mounted at the wrong location (e.g. /run/media/root/Storage)
+    if [ "$MOUNTPOINT" != "$EXPECTED_MOUNT" ]; then
+        echo "Notice: Storage partition was mounted at unexpected location: $MOUNTPOINT"
+        echo "Unmounting to mount properly at $EXPECTED_MOUNT..."
+        if ! udisksctl unmount -b "$DEV" 2>/dev/null; then
+            sudo umount "$DEV"
+        fi
+    elif [ "$FORCE_RW" = true ] && [[ "$OPTIONS" =~ (^|,)ro(,|$) ]]; then
+        echo "Storage is currently mounted read-only at $MOUNTPOINT."
+        echo "Unmounting to remount with read-write forced..."
+        if ! udisksctl unmount -b "$DEV" 2>/dev/null; then
+            sudo umount "$DEV"
+        fi
+    else
+        echo "Storage partition is already mounted at $MOUNTPOINT ($OPTIONS)."
+        if [[ "$OPTIONS" =~ (^|,)ro(,|$) ]]; then
+            echo "Notice: Storage is currently mounted read-only (NTFS dirty flag, likely from Windows Fast Startup)."
+            echo "To remount read-write, run: $0 -f"
+        fi
+        exit 0
+    fi
+fi
+
+# Mounting logic
+echo "Mounting Storage partition ($DEV)..."
+
+if [ "$FORCE_RW" = true ]; then
+    echo "Forced read-write mount requested..."
+    sudo mkdir -p "$EXPECTED_MOUNT"
+    sudo mount -t ntfs3 -o force,uid="$TARGET_UID",gid="$TARGET_GID" "$DEV" "$EXPECTED_MOUNT"
+    echo "Storage partition mounted successfully at $EXPECTED_MOUNT (read-write, forced)."
+    exit 0
+fi
+
+# Normal read-write mount attempt via udisksctl (if not root)
+if [ "$EUID" -ne 0 ]; then
+    if udisksctl mount -b "$DEV" 2>/dev/null; then
+        echo "Storage partition mounted successfully at $EXPECTED_MOUNT (read-write)."
+        exit 0
+    fi
+fi
+
+# Fallback read-only mount via udisksctl
+if [ "$EUID" -ne 0 ] && udisksctl mount -b "$DEV" -o ro 2>/dev/null; then
+    echo "Storage partition mounted read-only at $EXPECTED_MOUNT."
+    echo ""
+    echo "Note: If you need write access:"
+    echo "  1) Run: $0 -f"
+    echo "  2) Or disable 'Fast Startup' in Windows Control Panel for clean read-write mounts."
+    exit 0
+fi
+
+# If udisksctl fails (e.g. polkit or dirty volume without tty), fallback to mount command with sudo
+echo "Standard udisksctl mount failed. Falling back to mount..."
+sudo mkdir -p "$EXPECTED_MOUNT"
+if sudo mount -t ntfs3 -o ro,uid="$TARGET_UID",gid="$TARGET_GID" "$DEV" "$EXPECTED_MOUNT"; then
+    echo "Storage partition mounted read-only at $EXPECTED_MOUNT."
+    echo "Note: To mount read-write, run: $0 -f"
+    exit 0
+else
+    echo "Error: Failed to mount Storage partition." >&2
+    exit 1
+fi

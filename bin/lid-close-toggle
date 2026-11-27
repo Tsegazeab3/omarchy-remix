@@ -1,0 +1,25 @@
+#!/bin/bash
+# Toggle whether closing the laptop lid does anything (suspend + lock).
+# Usage: lid-close-toggle [toggle|on|off|status]
+#   on  = lid close does NOTHING (ignore)
+#   off = normal behavior (lock + suspend)
+UNIT=lid-ignore.service
+
+is_on() { systemctl --user is-enabled --quiet "$UNIT" 2>/dev/null; }
+
+turn_on() {
+  systemctl --user enable --now "$UNIT"
+  notify-send -a "Lid" "󰌢  Lid close: Do nothing" "Closing the lid will not lock or suspend." 2>/dev/null
+}
+turn_off() {
+  systemctl --user disable --now "$UNIT"
+  notify-send -a "Lid" "󰌢  Lid close: Normal" "Closing the lid will lock and suspend." 2>/dev/null
+}
+
+case "${1:-toggle}" in
+  toggle) if is_on; then turn_off; else turn_on; fi ;;
+  on) turn_on ;;
+  off) turn_off ;;
+  status) if is_on; then echo "ignore"; else echo "normal"; fi ;;
+  *) echo "Usage: lid-close-toggle [toggle|on|off|status]" >&2; exit 1 ;;
+esac

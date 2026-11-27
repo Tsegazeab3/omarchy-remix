@@ -1,0 +1,7 @@
+#!/bin/bash
+# Called by Hyprland on lid close. Skips the lock when lid-ignore is enabled.
+if systemctl --user is-enabled --quiet lid-ignore.service 2>/dev/null; then
+  omarchy-hyprland-monitor-clamshell
+else
+  exec omarchy-system-lid-close
+fi

@@ -1,0 +1,11 @@
+[Unit]
+Description=Ignore laptop lid close (do nothing when lid is closed)
+PartOf=graphical-session.target
+After=graphical-session.target
+
+[Service]
+ExecStart=/usr/bin/systemd-inhibit --what=handle-lid-switch --who=lid-ignore --why="Lid close set to do nothing" --mode=block /usr/bin/sleep infinity
+Restart=on-failure
+
+[Install]
+WantedBy=graphical-session.target

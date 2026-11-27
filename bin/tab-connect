@@ -1,0 +1,93 @@
+#!/usr/bin/env bash
+# ==============================================================================
+# tab-connect: Connect to Samsung Tab via ADB over network
+# Default Host: tab (Tailscale MagicDNS / local network)
+# Default Port: 5555
+#
+# Usage:
+#   tab-connect                  # Connects to tab:5555
+#   tab-connect -p 35571         # Connects to tab:35571
+#   tab-connect 35571            # Shorthand for port
+#   tab-connect -h 100.x.y.z -p 5555
+#   tab-connect --pair 41235     # Runs adb pair if using Wireless Debugging code
+# ==============================================================================
+
+CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/samsung-tab"
+CONFIG_FILE="$CONFIG_DIR/target.conf"
+mkdir -p "$CONFIG_DIR"
+
+DEFAULT_HOST="tab"
+DEFAULT_PORT="5555"
+
+# Load saved target if present
+if [[ -f "$CONFIG_FILE" ]]; then
+  # shellcheck source=/dev/null
+  source "$CONFIG_FILE"
+fi
+
+HOST="${HOST:-$DEFAULT_HOST}"
+PORT="${PORT:-$DEFAULT_PORT}"
+
+# Parse arguments
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -p|--port)
+      PORT="$2"
+      shift 2
+      ;;
+    -h|--host)
+      HOST="$2"
+      shift 2
+      ;;
+    --pair|-P)
+      PAIR_PORT="$2"
+      echo "Initiating ADB pairing with $HOST:$PAIR_PORT..."
+      adb pair "$HOST:$PAIR_PORT"
+      exit $?
+      ;;
+    [0-9]*)
+      PORT="$1"
+      shift
+      ;;
+    --help)
+      echo "Usage: tab-connect [-p PORT] [-h HOST] [PORT]"
+      echo "  -p, --port PORT   Specify ADB port (default: 5555)"
+      echo "  -h, --host HOST   Specify hostname/IP (default: tab)"
+      echo "  -P, --pair PORT   Pair with Wireless Debugging code"
+      exit 0
+      ;;
+    *)
+      echo "Unknown argument: $1"
+      echo "Usage: tab-connect [-p PORT] [-h HOST] [PORT]"
+      exit 1
+      ;;
+  esac
+done
+
+TARGET="$HOST:$PORT"
+echo "Connecting to Samsung Tab at $TARGET..."
+
+# Save current target to config for tab-keyboard and tab-display
+cat <<EOF > "$CONFIG_FILE"
+HOST="$HOST"
+PORT="$PORT"
+TARGET="$TARGET"
+EOF
+
+OUTPUT=$(adb connect "$TARGET" 2>&1)
+echo "$OUTPUT"
+
+if echo "$OUTPUT" | grep -qiE "(connected to|already connected)"; then
+  command -v omarchy-notification-send >/dev/null 2>&1 && \
+    omarchy-notification-send -u low "Samsung Tab Connected ($TARGET)"
+  exit 0
+else
+  command -v omarchy-notification-send >/dev/null 2>&1 && \
+    omarchy-notification-send -u normal "Failed to connect to Samsung Tab ($TARGET)"
+  echo ""
+  echo "Troubleshooting:"
+  echo "1. If using Android Wireless Debugging, check if the random port changed on the tablet."
+  echo "2. If never paired wirelessly before, run: tab-connect --pair <PAIRING_PORT>"
+  echo "3. Or plug USB once and run 'adb tcpip 5555' to lock port 5555."
+  exit 1
+fi

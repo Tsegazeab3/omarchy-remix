@@ -1,0 +1,65 @@
+#!/usr/bin/env bash
+# Open a local .docx in Word for the web: upload to OneDrive, then open its OneDrive URL.
+# Fast path: talks to Microsoft Graph directly with curl (one GET + one PUT) instead of
+# spawning rclone twice (~2.5 s each). rclone is only used to refresh an expired token.
+# Original rclone-based version: word-online.bak-rclone
+# Usage: word-online FILE [FILE...]
+set -uo pipefail
+REMOTE="${WORD_ONLINE_REMOTE:-onedrive}"
+DIR="${WORD_ONLINE_DIR:-WordOnline}"
+GRAPH="https://graph.microsoft.com/v1.0/me/drive/root"
+
+note() { notify-send -a "Word Online" "$@" 2>/dev/null || echo "$*"; }
+get_token() { rclone config dump | jq -r --arg r "$REMOTE" '.[$r].token // empty' | jq -r '.access_token // empty'; }
+refresh_token() { rclone lsf --max-depth 1 "$REMOTE:" >/dev/null 2>&1; token=$(get_token); }
+open_url() { [ -n "${WORD_ONLINE_NO_OPEN:-}" ] && { echo "$1"; return; }; xdg-open "$1" >/dev/null 2>&1 & }
+
+token=$(get_token)
+if [ -z "$token" ]; then
+  note "OneDrive not connected" "Run: rclone config create $REMOTE onedrive"
+  exit 1
+fi
+
+# graph METHOD URL [curl args...] -> body on stdout, HTTP code in $code; retries once on 401
+graph() {
+  local method=$1 url=$2; shift 2
+  local out
+  for attempt in 1 2; do
+    out=$(curl -sS -X "$method" -H "Authorization: Bearer $token" -w $'\n%{http_code}' "$@" "$url")
+    code=${out##*$'\n'}; body=${out%$'\n'*}
+    if [ "$code" = 401 ] && [ $attempt = 1 ]; then refresh_token; continue; fi
+    break
+  done
+}
+
+for f in "$@"; do
+  name=$(basename "$f")
+  path=$(jq -rn --arg p "$DIR/$name" '$p | split("/") | map(@uri) | join("/")')
+
+  # One request: does a copy exist, is it newer, and what is its web URL?
+  graph GET "$GRAPH:/$path?\$select=webUrl,fileSystemInfo,lastModifiedDateTime"
+  url=""
+  if [ "$code" = 200 ]; then
+    remote_mtime=$(jq -r '.fileSystemInfo.lastModifiedDateTime // .lastModifiedDateTime // empty' <<<"$body")
+    if [ -n "$remote_mtime" ] && [ "$(date -d "$remote_mtime" +%s)" -gt "$(stat -c %Y "$f")" ]; then
+      note "Opening the OneDrive copy" "$name was edited online, so it was not overwritten"
+      url=$(jq -r '.webUrl // empty' <<<"$body")
+    fi
+  fi
+
+  if [ -z "$url" ]; then
+    note "Uploading" "$name"
+    graph PUT "$GRAPH:/$path:/content" --data-binary @"$f" -H "Content-Type: application/octet-stream"
+    if [ "$code" != 200 ] && [ "$code" != 201 ]; then
+      note "Upload failed ($code)" "$name"; continue
+    fi
+    url=$(jq -r '.webUrl // empty' <<<"$body")
+  fi
+
+  if [ -n "$url" ]; then
+    open_url "$url"
+  else
+    note "Uploaded, but couldn't get the link" "Find it in OneDrive under $DIR/"
+    open_url "https://onedrive.live.com/"
+  fi
+done

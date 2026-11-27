@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "id": "t.clockwork",
+  "name": "My Clockwork",
+  "version": "0.7.1",
+  "author": "Pieter Geutjens",
+  "license": "MIT",
+  "description": "A stopwatch, countdown, alarm, intervals, and Pomodoro timer for the Omarchy bar. Local copy: writes Pomodoro state to ~/.local/state/mindgate/pomodoro.json for MindGate zen mode.",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "My Clockwork",
+    "description": "Stopwatch, countdown, alarm, intervals, and Pomodoro cycles",
+    "category": "Time",
+    "allowMultiple": false,
+    "defaultSection": "right"
+  }
+}

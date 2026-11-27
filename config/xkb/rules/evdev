@@ -1,0 +1,5 @@
+! option = symbols
+  custom:caps_ctrl_lctl_esc = +custom(caps_ctrl_lctl_esc)
+  custom:caps_ctrl_lctl_esc_v2 = +custom(caps_ctrl_lctl_esc)
+
+! include %S/evdev

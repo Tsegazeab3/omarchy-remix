@@ -1,0 +1,67 @@
+#!/usr/bin/env bash
+# ==============================================================================
+# tab-keyboard: Connect PC physical keyboard & clipboard to Samsung Tab (headless)
+# ==============================================================================
+
+CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/samsung-tab"
+CONFIG_FILE="$CONFIG_DIR/target.conf"
+
+HOST="tab"
+PORT="5555"
+
+if [[ -f "$CONFIG_FILE" ]]; then
+  # shellcheck source=/dev/null
+  source "$CONFIG_FILE"
+fi
+
+EXTRA_ARGS=()
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -p|--port)
+      PORT="$2"
+      shift 2
+      ;;
+    -h|--host)
+      HOST="$2"
+      shift 2
+      ;;
+    [0-9]*)
+      PORT="$1"
+      shift
+      ;;
+    *)
+      EXTRA_ARGS+=("$1")
+      shift
+      ;;
+  esac
+done
+
+TARGET="$HOST:$PORT"
+
+# Check if Samsung-Tab window is already open
+EXISTING_ADDR=$(hyprctl clients -j 2>/dev/null | jq -r '.[] | select(.title | test("Samsung-Tab"; "i")) | .address' | head -n1)
+if [[ -n "$EXISTING_ADDR" ]]; then
+  echo "Samsung Tab window already running. Focusing..."
+  hyprctl dispatch "hl.dsp.focus({ window = \"address:$EXISTING_ADDR\" })" >/dev/null 2>&1
+  exit 0
+fi
+
+# Ensure ADB connection is established
+if ! adb devices | grep -q "$TARGET"; then
+  echo "Target $TARGET not connected in adb. Connecting..."
+  tab-connect -h "$HOST" -p "$PORT" || exit 1
+fi
+
+echo "Launching Samsung Tab Keyboard mode ($TARGET)..."
+command -v omarchy-notification-send >/dev/null 2>&1 && \
+  omarchy-notification-send -u low "Samsung Tab Keyboard Active"
+
+exec scrcpy \
+  -s "$TARGET" \
+  --keyboard=uhid \
+  --no-video \
+  --no-audio \
+  --window-title="Samsung-Tab-Keyboard" \
+  --window-width=260 \
+  --window-height=120 \
+  "${EXTRA_ARGS[@]}"

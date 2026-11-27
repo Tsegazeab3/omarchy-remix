@@ -1,0 +1,164 @@
+#!/usr/bin/env bash
+# ==============================================================================
+# phone-mic: Use Samsung Tab / Android device as a wireless PC microphone
+# ==============================================================================
+set -e
+
+# Check dependencies
+for cmd in scrcpy adb pw-link pactl; do
+    if ! command -v "$cmd" &>/dev/null; then
+        echo "Error: '$cmd' is not installed."
+        exit 1
+    fi
+done
+
+CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/samsung-tab"
+CONFIG_FILE="$CONFIG_DIR/target.conf"
+
+HOST="tab"
+PORT="5555"
+
+# Load saved target if present
+if [[ -f "$CONFIG_FILE" ]]; then
+    # shellcheck source=/dev/null
+    source "$CONFIG_FILE"
+elif [[ -f "${XDG_CONFIG_HOME:-$HOME/.config}/phone-mic/device" ]]; then
+    SAVED=$(cat "${XDG_CONFIG_HOME:-$HOME/.config}/phone-mic/device" 2>/dev/null || true)
+    if [[ "$SAVED" =~ :[0-9]+$ ]]; then
+        HOST="${SAVED%%:*}"
+        PORT="${SAVED##*:}"
+    fi
+fi
+
+EXTRA_ARGS=()
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -p|--port)
+            PORT="$2"
+            shift 2
+            ;;
+        -h|--host)
+            HOST="$2"
+            shift 2
+            ;;
+        [0-9]*)
+            PORT="$1"
+            shift
+            ;;
+        *)
+            EXTRA_ARGS+=("$1")
+            shift
+            ;;
+    esac
+done
+
+TARGET="$HOST:$PORT"
+echo "Target Android device: $TARGET"
+
+# Ensure ADB is running
+adb start-server >/dev/null 2>&1
+
+# Check device state for this specific target
+DEVICE_STATE=$(adb -s "$TARGET" get-state 2>/dev/null || true)
+if [ "$DEVICE_STATE" != "device" ]; then
+    echo "Attempting connection to $TARGET..."
+    adb connect "$TARGET" >/dev/null 2>&1 || true
+    DEVICE_STATE=$(adb -s "$TARGET" get-state 2>/dev/null || true)
+fi
+
+if [ "$DEVICE_STATE" != "device" ]; then
+    echo "Error: Device $TARGET is not connected or authorized in ADB."
+    echo "1. Verify Wireless Debugging is enabled on your tablet."
+    echo "2. Check if the port changed (run: phone-mic -p <PORT>)."
+    echo "3. Or run 'tab-connect' to pair/connect."
+    exit 1
+fi
+
+echo "Setting up PipeWire virtual microphone..."
+# Remember existing default audio output (headphones/speakers) and microphone
+ORIGINAL_SINK=$(pactl get-default-sink 2>/dev/null || true)
+ORIGINAL_SOURCE=$(pactl get-default-source 2>/dev/null || true)
+
+# Create virtual sink with low priority so PipeWire never steals default audio output
+SINK_MOD=$(pactl load-module module-null-sink sink_name=PhoneMic sink_properties="device.description='Phone_Microphone_Sink' priority.session=1 priority.driver=1")
+SRC_MOD=$(pactl load-module module-remap-source master=PhoneMic.monitor source_name=PhoneMicSource source_properties="device.description='Phone_Microphone'")
+
+# Ensure your headphones/speakers remain the default output for music, browser, games, etc.
+if [ -n "$ORIGINAL_SINK" ] && [ "$ORIGINAL_SINK" != "PhoneMic" ]; then
+    pactl set-default-sink "$ORIGINAL_SINK" 2>/dev/null || true
+fi
+
+# Set the phone microphone as the default recording source
+pactl set-default-source PhoneMicSource 2>/dev/null || true
+
+CLEANED_UP=0
+cleanup() {
+    if [ "$CLEANED_UP" -eq 1 ]; then
+        return
+    fi
+    CLEANED_UP=1
+    echo ""
+    echo "Cleaning up virtual microphone..."
+    if [ -n "${WATCHDOG_PID:-}" ]; then
+        kill "$WATCHDOG_PID" 2>/dev/null || true
+    fi
+    if [ -n "$ORIGINAL_SOURCE" ] && [ "$ORIGINAL_SOURCE" != "PhoneMicSource" ]; then
+        pactl set-default-source "$ORIGINAL_SOURCE" 2>/dev/null || true
+    fi
+    if [ -n "$ORIGINAL_SINK" ] && [ "$ORIGINAL_SINK" != "PhoneMic" ]; then
+        pactl set-default-sink "$ORIGINAL_SINK" 2>/dev/null || true
+    fi
+    pactl unload-module "$SRC_MOD" 2>/dev/null || true
+    pactl unload-module "$SINK_MOD" 2>/dev/null || true
+
+    echo "Phone-mic stopped. (ADB connection preserved)"
+}
+trap cleanup EXIT INT TERM
+
+# Background watchdog:
+# 1. Unlink scrcpy from physical headphones/speakers so you don't hear your own echo
+# 2. Make sure regular apps (browser, media) stay on your headphones and out of PhoneMic
+(
+    for _ in {1..50}; do
+        if [ -n "$ORIGINAL_SINK" ] && [ "$ORIGINAL_SINK" != "PhoneMic" ]; then
+            pactl set-default-sink "$ORIGINAL_SINK" 2>/dev/null || true
+        fi
+
+        if pw-link -l 2>/dev/null | grep -qE "(scrcpy.*output|scrcpy:output)"; then
+            # Unlink scrcpy from physical speakers/headphones
+            for p in $(pw-link -l 2>/dev/null | grep -E 'alsa_output.*:playback_F[LR]' | awk -F'|<- ' '{print $1}' | tr -d ' '); do
+                pw-link -d "scrcpy:output_FL" "$p" 2>/dev/null || true
+                pw-link -d "scrcpy:output_FR" "$p" 2>/dev/null || true
+            done
+            # Ensure scrcpy is linked to PhoneMic
+            pw-link "scrcpy:output_FL" "PhoneMic:playback_FL" 2>/dev/null || true
+            pw-link "scrcpy:output_FR" "PhoneMic:playback_FR" 2>/dev/null || true
+            break
+        fi
+        sleep 0.1
+    done
+) &
+WATCHDOG_PID=$!
+
+echo "---------------------------------------------------------"
+echo " Samsung Tab Microphone active!"
+echo " Input: Phone_Microphone (set as system default mic)"
+echo " Output: $ORIGINAL_SINK (headphones/speakers intact)"
+echo " Press Ctrl+C to stop."
+echo "---------------------------------------------------------"
+
+command -v omarchy-notification-send >/dev/null 2>&1 && \
+    omarchy-notification-send -u low "Samsung Tab Microphone Active"
+
+# Stream raw audio from device microphone, targeting PhoneMic
+SDL_AUDIO_DRIVER=pulseaudio \
+PULSE_SINK=PhoneMic \
+PIPEWIRE_NODE=PhoneMic \
+scrcpy \
+    -s "$TARGET" \
+    --no-video \
+    --no-window \
+    --audio-source=mic \
+    --audio-codec=raw \
+    --audio-buffer=0 \
+    "${EXTRA_ARGS[@]}"

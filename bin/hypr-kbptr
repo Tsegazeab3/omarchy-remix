@@ -1,0 +1,262 @@
+#!/usr/bin/env python3
+"""
+Window-targeted keyboard pointer and keyboard drag tool for Hyprland.
+Usage:
+    hypr-kbptr [--drag]
+"""
+
+import sys
+import json
+import subprocess
+import os
+import re
+import time
+import fcntl
+import signal
+
+LOCK_PATH = os.path.join(os.environ.get("XDG_RUNTIME_DIR", "/tmp"), "hypr-kbptr.lock")
+
+def single_instance():
+    """Only one hypr-kbptr at a time. A second press cancels the running one
+    (and its wl-kbptr overlay) instead of stacking keyboard grabs."""
+    fd = os.open(LOCK_PATH, os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        try:
+            pgid = int(os.read(fd, 32).decode().strip() or 0)
+            if pgid > 1:
+                os.killpg(pgid, signal.SIGTERM)
+        except (ValueError, ProcessLookupError, PermissionError):
+            pass
+        subprocess.run(["pkill", "-x", "wl-kbptr"])
+        sys.exit(0)
+    os.setpgrp()
+    os.ftruncate(fd, 0)
+    os.write(fd, str(os.getpgrp()).encode())
+    os.set_inheritable(fd, True)  # keep lock held across execvp into wl-kbptr
+    return fd
+
+def get_monitors():
+    try:
+        mon_res = subprocess.run(["hyprctl", "monitors", "-j"], capture_output=True, text=True, check=True)
+        return json.loads(mon_res.stdout)
+    except Exception:
+        return []
+
+def get_total_bounds(mons):
+    if not mons:
+        return 1920, 1080
+    max_x = max(m["x"] + int(m["width"] / m["scale"]) for m in mons)
+    max_y = max(m["y"] + int(m["height"] / m["scale"]) for m in mons)
+    return max_x, max_y
+
+def monitor_for(mons, mon_id=None, point=None):
+    for m in mons:
+        if mon_id is not None and m.get("id") == mon_id:
+            return m
+        if point is not None:
+            w, h = int(m["width"] / m["scale"]), int(m["height"] / m["scale"])
+            if m["x"] <= point[0] < m["x"] + w and m["y"] <= point[1] < m["y"] + h:
+                return m
+    return next((m for m in mons if m.get("focused")), mons[0] if mons else None)
+
+def to_local(area, mon):
+    """Convert a global 'WxH+X+Y' area to coordinates relative to mon (wl-kbptr expects this)."""
+    if not mon:
+        return area
+    m = re.match(r"(\d+)x(\d+)\+(-?\d+)\+(-?\d+)", area)
+    w, h, x, y = [int(v) for v in m.groups()]
+    return f"{w}x{h}+{x - mon['x']}+{y - mon['y']}"
+
+def get_active_window():
+    try:
+        res = subprocess.run(["hyprctl", "activewindow", "-j"], capture_output=True, text=True, check=True)
+        data = json.loads(res.stdout)
+        if data and data.get("mapped") and not data.get("hidden"):
+            return data
+    except Exception:
+        pass
+    return None
+
+def get_current_cursor():
+    try:
+        res = subprocess.run(["hyprctl", "cursorpos"], capture_output=True, text=True, check=True)
+        parts = res.stdout.strip().split(",")
+        return int(parts[0].strip()), int(parts[1].strip())
+    except Exception:
+        return 0, 0
+
+def get_all_visible_windows(mons, exclude_addr=None):
+    active_ws_ids = {m["activeWorkspace"]["id"] for m in mons if "activeWorkspace" in m and "id" in m["activeWorkspace"]}
+    special_ws_names = {m["specialWorkspace"]["name"] for m in mons if m.get("specialWorkspace", {}).get("name")}
+
+    try:
+        cli_res = subprocess.run(["hyprctl", "clients", "-j"], capture_output=True, text=True, check=True)
+        clients = json.loads(cli_res.stdout)
+    except Exception:
+        clients = []
+
+    visible = []
+    for c in clients:
+        if not c.get("mapped") or c.get("hidden"):
+            continue
+        if exclude_addr and c.get("address") == exclude_addr:
+            continue
+        ws = c.get("workspace", {})
+        ws_id = ws.get("id")
+        ws_name = ws.get("name")
+        if ws_id in active_ws_ids or ws_name in special_ws_names:
+            w = c.get("size", [0, 0])[0]
+            h = c.get("size", [0, 0])[1]
+            x = c.get("at", [0, 0])[0]
+            y = c.get("at", [0, 0])[1]
+            if w > 10 and h > 10:
+                visible.append((f"{w}x{h}+{x}+{y}", c.get("monitor")))
+    return visible
+
+def parse_kbptr_output(stdout_str):
+    """
+    Parses wl-kbptr -p output:
+    "%dx%d+%d+%d +%d+%d %c\n"
+    Returns (global_center_x, global_center_y)
+    """
+    if not stdout_str:
+        return None
+    lines = stdout_str.strip().splitlines()
+    if not lines:
+        return None
+    parts = lines[0].split()
+    if len(parts) < 2:
+        return None
+    geom = parts[0]
+    out_pos = parts[1]
+    m1 = re.match(r"(\d+)x(\d+)\+(-?\d+)\+(-?\d+)", geom)
+    m2 = re.match(r"\+(-?\d+)\+(-?\d+)", out_pos)
+    if not m1 or not m2:
+        return None
+    w, h, x, y = [int(v) for v in m1.groups()]
+    ox, oy = [int(v) for v in m2.groups()]
+    cx = ox + x + w // 2
+    cy = oy + y + h // 2
+    return cx, cy
+
+def pick_point_in_area(area, mon=None):
+    """area is output-relative to mon; returns global (x, y)."""
+    cmd = ["wl-kbptr", "-p"]
+    if mon:
+        cmd.extend(["-O", mon["name"]])
+    if area:
+        cmd.extend(["-r", area])
+    proc = subprocess.run(cmd, capture_output=True, text=True)
+    if proc.returncode != 0 or not proc.stdout.strip():
+        return None
+    return parse_kbptr_output(proc.stdout)
+
+def select_target_window(window_areas, mon=None):
+    if len(window_areas) == 0:
+        return None
+    if len(window_areas) == 1:
+        return window_areas[0]
+
+    input_data = "\n".join(window_areas) + "\n"
+    proc = subprocess.run(
+        [
+            "wl-kbptr",
+            "-o", "general.modes=floating",
+            "-o", "mode_floating.source=stdin",
+            "-p"
+        ] + (["-O", mon["name"]] if mon else []),
+        input=input_data,
+        capture_output=True,
+        text=True
+    )
+
+    if proc.returncode != 0 or not proc.stdout.strip():
+        return None
+
+    first_line = proc.stdout.strip().splitlines()[0]
+    parts = first_line.split()
+    if parts:
+        return parts[0]
+    return None
+
+def pick_window_on(mons, windows, mon):
+    """windows: [(global_area, mon_id)]; returns output-relative area on mon or None."""
+    local = [to_local(a, mon) for a, mid in windows if mid == mon.get("id")]
+    return select_target_window(local, mon)
+
+def main():
+    _lock = single_instance()
+    is_drag = "--drag" in sys.argv or "-d" in sys.argv
+    mons = get_monitors()
+    total_w, total_h = get_total_bounds(mons)
+
+    if not is_drag:
+        # Standard click pointer mode (Alt + P), on the focused monitor
+        mon = monitor_for(mons)
+        visible = get_all_visible_windows(mons)
+        on_mon = [w for w in visible if w[1] == mon.get("id")] if mon else visible
+        target_area = pick_window_on(mons, on_mon, mon) if mon else None
+        if not target_area and len(on_mon) > 1:
+            sys.exit(0)
+
+        cmd = ["wl-kbptr"]
+        if mon:
+            cmd.extend(["-O", mon["name"]])
+        if target_area:
+            cmd.extend(["-r", target_area])
+        os.execvp("wl-kbptr", cmd)
+
+    # Drag mode (Alt + O)
+    active_win = get_active_window()
+
+    # 1. Always pick the item to drag (inside the active window if there is one)
+    if active_win:
+        src_mon = monitor_for(mons, mon_id=active_win.get("monitor"))
+        ax, ay = active_win["at"]
+        aw, ah = active_win["size"]
+        pt1 = pick_point_in_area(to_local(f"{aw}x{ah}+{ax}+{ay}", src_mon), src_mon)
+    else:
+        src_mon = monitor_for(mons)
+        pt1 = pick_point_in_area(None, src_mon)
+    if not pt1:
+        sys.exit(0)
+    start_x, start_y = pt1
+
+    time.sleep(0.05)
+
+    # 2. Choose destination window (prefer other windows on the same monitor,
+    #    otherwise windows on another monitor, otherwise anywhere)
+    others = get_all_visible_windows(mons, exclude_addr=active_win.get("address") if active_win else None)
+    dest_mon = src_mon
+    if src_mon and not any(mid == src_mon.get("id") for _, mid in others):
+        other_mon_ids = [mid for _, mid in others]
+        if other_mon_ids:
+            dest_mon = monitor_for(mons, mon_id=other_mon_ids[0])
+
+    candidates = [w for w in others if dest_mon and w[1] == dest_mon.get("id")]
+    if candidates:
+        dest_area = pick_window_on(mons, candidates, dest_mon)
+        if not dest_area:
+            sys.exit(0)
+    else:
+        dest_area = None  # no other windows: drop anywhere on the monitor
+
+    time.sleep(0.05)
+
+    # 3. Choose the exact drop spot
+    pt2 = pick_point_in_area(dest_area, dest_mon)
+    if not pt2:
+        sys.exit(0)
+    end_x, end_y = pt2
+
+    # 4. Perform the drag (global layout coordinates)
+    subprocess.run([
+        os.path.expanduser("~/.local/bin/wl-drag-exec"),
+        str(start_x), str(start_y), str(end_x), str(end_y),
+        str(total_w), str(total_h)
+    ], timeout=10)
+
+if __name__ == "__main__":
+    main()

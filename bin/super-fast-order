@@ -1,0 +1,160 @@
+#!/usr/bin/env python3
+import sys, json, urllib.request, os, subprocess, datetime
+from datetime import timedelta
+
+print("\n🚀 Super Fast Order (3-Layer Multi-Tool Pipeline)")
+prompt = sys.argv[1] if len(sys.argv) > 1 else input("Order: ")
+if not prompt: sys.exit(0)
+
+openrouter_key = os.environ.get("OPENROUTER_API_KEY") or sys.exit("Set OPENROUTER_API_KEY first.")
+
+now = datetime.datetime.now()
+today = now.strftime("%Y-%m-%d")
+weekday = now.strftime("%A")
+upcoming_dates = ", ".join([(now + timedelta(days=i)).strftime("%A %Y-%m-%d") for i in range(7)])
+date_context = f"Today is {weekday} {today}. The upcoming 7 days are: {upcoming_dates}."
+
+def call_ollama(model, messages, format=None):
+    payload = {"model": model, "messages": messages, "stream": False}
+    if format: payload["format"] = format
+    req = urllib.request.Request(
+        "http://localhost:11434/api/chat", 
+        data=json.dumps(payload).encode('utf-8'), 
+        headers={"Content-Type": "application/json"}
+    )
+    with urllib.request.urlopen(req) as response:
+        return json.loads(response.read().decode())
+
+def call_openrouter(model, messages, tools=None):
+    payload = {"model": model, "messages": messages}
+    if tools: payload["tools"] = tools
+    req = urllib.request.Request(
+        "https://openrouter.ai/api/v1/chat/completions", 
+        data=json.dumps(payload).encode('utf-8'), 
+        headers={"Authorization": f"Bearer {openrouter_key}", "Content-Type": "application/json"}
+    )
+    with urllib.request.urlopen(req) as response:
+        return json.loads(response.read().decode())
+
+# LAYER 1: Rewrite (Local Qwen)
+print("📝 Layer 1: Rewriting request (Local Qwen)...")
+try:
+    rewrite_resp = call_ollama("qwen-calendar:latest", [
+        {"role": "system", "content": "You are a prompt rewriter. Rewrite the user's messy request into a clear, concise list of instructions. Do not lose any details."},
+        {"role": "user", "content": prompt}
+    ])
+    clean_prompt = rewrite_resp['message']['content'].strip()
+    print(f"   ↳ Cleaned: {clean_prompt}")
+except Exception as e:
+    print(f"   ↳ Error: {e}")
+    clean_prompt = prompt
+
+# LAYER 2: Router (Local Qwen)
+print("⚡ Layer 2: Extracting context (Local Qwen JSON)...")
+try:
+    route_resp = call_ollama("qwen-calendar:latest", [
+        {"role": "system", "content": f"You are a router. {date_context} Analyze the instructions. Output valid JSON matching this exact schema: {{\"route\": \"CALENDAR\" or \"FALLBACK\", \"relevant_dates\": [\"YYYY-MM-DD\"]}}. Use FALLBACK for terminal/browser tasks."},
+        {"role": "user", "content": clean_prompt}
+    ], format="json")
+    route_data = json.loads(route_resp['message']['content'])
+    route = route_data.get("route", "FALLBACK")
+    relevant_dates = route_data.get("relevant_dates", [])
+    print(f"   ↳ Route: {route}")
+    if relevant_dates: print(f"   ↳ Dates: {', '.join(relevant_dates)}")
+except Exception as e:
+    print(f"   ↳ Error: {e}")
+    route = "FALLBACK"
+    relevant_dates = []
+
+# LAYER 3: Executor (Gemini 3.8 Flash via OpenRouter)
+if route == "CALENDAR":
+    print("📅 Layer 3: Executing with Gemini 3.8 Flash...")
+    vault_dir = os.path.join(os.environ.get("OBSIDIAN_VAULT", os.path.expanduser("~/Documents/Obsidian Vault")), "Calendar")
+    os.makedirs(vault_dir, exist_ok=True)
+    
+    # Load ONLY the targeted files!
+    calendar_data = []
+    for f in os.listdir(vault_dir):
+        if f.endswith(".md") and any(d in f for d in relevant_dates):
+            with open(os.path.join(vault_dir, f), 'r') as file:
+                calendar_data.append(f"File: {f}\n{file.read()}\n")
+    all_events = "\n".join(calendar_data) if calendar_data else "No existing events on these dates."
+
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "create_calendar_event",
+                "description": "Create an event in the calendar",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "filename": {"type": "string", "description": "Like '2026-09-22-meeting.md'"},
+                        "title": {"type": "string"},
+                        "date": {"type": "string", "description": "YYYY-MM-DD"},
+                        "startTime": {"type": "string", "description": "HH:MM"},
+                        "endTime": {"type": "string", "description": "HH:MM"},
+                        "content": {"type": "string"}
+                    },
+                    "required": ["filename", "title", "date"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "delete_calendar_event",
+                "description": "Delete a calendar event file",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "filename": {"type": "string", "description": "Exact filename to delete"}
+                    },
+                    "required": ["filename"]
+                }
+            }
+        }
+    ]
+
+    gemini_resp = call_openrouter("google/gemini-3.8-flash", [
+        {"role": "system", "content": f"You are a calendar assistant. {date_context}\n\nHere are the user's files for the relevant dates:\n{all_events}\n\nFulfill all user requests. If they ask a question, answer it. If they ask to create/delete, call the tools. You can call multiple tools at once!"},
+        {"role": "user", "content": clean_prompt}
+    ], tools)
+    
+    msg = gemini_resp['choices'][0]['message']
+    
+    if msg.get('content'):
+        print("\n" + msg['content'].strip() + "\n")
+        
+    if 'tool_calls' in msg:
+        for t in msg['tool_calls']:
+            name = t['function']['name']
+            args = json.loads(t['function']['arguments'])
+            
+            if name == "create_calendar_event":
+                filepath = os.path.join(vault_dir, args['filename'])
+                with open(filepath, "w") as f:
+                    f.write("---\n")
+                    f.write(f"title: {args['title']}\n")
+                    f.write(f"date: {args['date']}\n")
+                    if 'startTime' in args: f.write(f"startTime: {args['startTime']}\n")
+                    if 'endTime' in args: f.write(f"endTime: {args['endTime']}\n")
+                    f.write("---\n\n")
+                    f.write(args.get('content', ''))
+                print(f"   ↳ Created: {filepath}")
+                
+            elif name == "delete_calendar_event":
+                filepath = os.path.join(vault_dir, args['filename'])
+                if os.path.exists(filepath):
+                    os.remove(filepath)
+                    print(f"   ↳ Deleted: {filepath}")
+                else:
+                    print(f"   ↳ Error: File {filepath} not found.")
+
+else:
+    print("🛠️  Falling back to AGY...")
+    print("⏳ AGY is thinking (this takes ~15 seconds)...")
+    subprocess.run(["/usr/bin/agy", "--dangerously-skip-permissions", "--print", clean_prompt])
+
+print("\n✅ Done!")
+if len(sys.argv) <= 1: input("\nPress Enter to close...")

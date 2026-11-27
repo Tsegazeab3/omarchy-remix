@@ -1,0 +1,10 @@
+[Unit]
+Description=Delete downloaded videos longer than 10 minutes
+
+[Service]
+ExecStart=%h/.local/bin/download-watch
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target

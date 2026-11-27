@@ -1,0 +1,12 @@
+#!/bin/bash
+# Toggle Materialgram window
+
+ACTIVE_CLASS=$(hyprctl activewindow -j | jq -r .class 2>/dev/null)
+
+if [[ "$ACTIVE_CLASS" =~ (materialgram|telegram) ]]; then
+  # Already active and focused: hide/close to tray
+  hyprctl dispatch "hl.dsp.window.close()"
+else
+  # Focus existing window or launch
+  omarchy-launch-or-focus "materialgram" "materialgram"
+fi

@@ -1,0 +1,2 @@
+module t.clockwork
+singleton TimerState 1.0 TimerState.qml

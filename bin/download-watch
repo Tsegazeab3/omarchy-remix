@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Watches browser + Materialgram download folders; every finished file goes through long-video-check.
+DIRS=()
+for d in "$HOME/Downloads" "$HOME/materialgram"; do [ -d "$d" ] && DIRS+=("$d"); done
+inotifywait -m -r -q -e close_write -e moved_to --format '%w%f' "${DIRS[@]}" | while IFS= read -r f; do
+  ( sleep 3; "$HOME/.local/bin/long-video-check" "$f" ) &
+done

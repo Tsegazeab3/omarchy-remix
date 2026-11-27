@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Fetch active mapped windows from Hyprland
+clients=$(hyprctl clients -j | jq -r '.[] | select(.mapped == true and .hidden == false) | "󰖲\t\(if .title == "" then .class else .title end)\t[Workspace \(.workspace.name)] \(.class)\t\(.address)"')
+
+if [[ -z "$clients" ]]; then
+  exit 0
+fi
+
+# Summon Omarchy fuzzy menu
+selected=$(printf '%s\n' "$clients" | omarchy-menu-select "Switch Window" -- --width 520 || true)
+
+if [[ -n "$selected" ]]; then
+  address="${selected##*$'\t'}"
+  if [[ "$address" =~ ^0x[0-9a-fA-F]+$ ]]; then
+    hyprctl dispatch "hl.dsp.focus({ window = \"address:$address\" })"
+  fi
+fi

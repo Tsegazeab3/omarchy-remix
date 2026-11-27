@@ -1,0 +1,8 @@
+# AUR packages. Install with: omarchy pkg aur add $(grep -v '^#' packages-aur.txt)
+antigravity-cli
+materialgram-bin
+speedcrunch-git
+vesktop-bin
+wakatime
+# Also used: wl-kbptr (for hypr-kbptr), wayscriber (screen drawing)
+wl-kbptr

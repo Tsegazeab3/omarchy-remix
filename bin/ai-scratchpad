@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# Fast AI Scratchpad for quick answers - Powered by Qwen
+set -eo pipefail
+clear
+echo -e "\033[1;36m╭─────────────────────────────────────────────────────────────╮\033[0m"
+echo -e "\033[1;36m│\033[0m   \033[1;32m⚡ Fast AI Chat\033[0m         \033[0;90m•\033[0m   \033[1;37mQwen 2.5 (1.5B)\033[0m                 \033[1;36m│\033[0m"
+echo -e "\033[1;36m│\033[0m   \033[0;90mFor quick questions and short answers.\033[0m                    \033[1;36m│\033[0m"
+echo -e "\033[1;36m╰─────────────────────────────────────────────────────────────╯\033[0m"
+echo ""
+exec ollama run qwen-calendar

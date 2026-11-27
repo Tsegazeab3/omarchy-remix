@@ -1,0 +1,9 @@
+default partial modifier_keys
+xkb_symbols "caps_ctrl_lctl_esc" {
+    replace key <CAPS> { [ Control_L ], type[group1] = "ONE_LEVEL" };
+    replace key <LCTL> { [ Escape ], type[group1] = "ONE_LEVEL" };
+    replace key <ESC>  { [ Caps_Lock ], type[group1] = "ONE_LEVEL" };
+    modifier_map Control { <CAPS> };
+    modifier_map None { <LCTL> };
+    modifier_map Lock { Caps_Lock, <ESC> };
+};

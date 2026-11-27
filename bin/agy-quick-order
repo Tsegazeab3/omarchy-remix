@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+clear
+echo -e "\033[1;36m╭─────────────────────────────────────────────────────────────╮\033[0m"
+echo -e "\033[1;36m│\033[0m   \033[1;35m🚀 Quick Order\033[0m           \033[0;90m•\033[0m   \033[1;37mGemini 3.8 Flash\033[0m                \033[1;36m│\033[0m"
+echo -e "\033[1;36m│\033[0m   \033[0;90mType your order, press Enter, and get back to work.\033[0m       \033[1;36m│\033[0m"
+echo -e "\033[1;36m╰─────────────────────────────────────────────────────────────╯\033[0m"
+echo ""
+
+read -e -p "Order: " USER_PROMPT
+
+if [ -z "$USER_PROMPT" ]; then
+    exit 0
+fi
+
+cat << 'EOF2' > /tmp/agy-task.sh
+#!/usr/bin/env bash
+notify-send "⏳ AI Working..." "Processing your order.\nThis takes ~45 seconds." -a "Antigravity" -u normal -t 45000
+
+cd "${OBSIDIAN_VAULT:-$HOME/Documents/Obsidian Vault}"
+/usr/bin/agy --dangerously-skip-permissions --model gemini-3.8-flash-medium --prompt "$1" > /tmp/agy-last-order.log 2>&1
+
+# Strip all weird characters (like markdown links) that break the notification box
+RESPONSE=$(tail -n 10 /tmp/agy-last-order.log | sed 's/\[[^]]*\]([^)]*)//g' | tr -cd '[:alnum:] [:punct:]' | tr '\n' ' ' | head -c 150)
+
+if [ -z "$RESPONSE" ]; then
+    RESPONSE="Task finished successfully. (Check your vault)"
+fi
+
+notify-send "✅ Order Completed" "$RESPONSE..." -a "Antigravity" -u normal -t 15000
+EOF2
+chmod +x /tmp/agy-task.sh
+
+systemd-run --user --no-block /tmp/agy-task.sh "$USER_PROMPT" >/dev/null 2>&1
+
+exit 0

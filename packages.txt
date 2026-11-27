@@ -1,0 +1,44 @@
+# Packages added on top of a stock Omarchy install.
+# Install with: omarchy pkg add $(grep -v '^#' packages.txt)
+
+# Input: Amharic/Ethiopic typing
+fcitx5-configtool
+fcitx5-m17n
+
+# Android tablet as second screen / keyboard / mic (tab-*, phone-mic)
+android-tools
+scrcpy
+
+# Cloud + network
+rclone
+tailscale
+
+# Desktop apps
+brave-bin
+discord
+ghostty
+inkscape
+kdenlive
+kicad
+obs-studio
+qbittorrent
+vlc
+vlc-plugins-all
+xournalpp
+
+# Dev
+clang
+llvm
+lazydocker
+python-pipx
+visual-studio-code-bin
+
+# Utilities
+7zip
+alsa-tools
+htop
+usbutils
+ytfzf
+flea
+voxtype-bin
+fprintd

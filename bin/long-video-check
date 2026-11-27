@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# long-video-check [--dry-run] FILE...
+# Deletes any file that is a real video (not audio with cover art, not an image) longer than 10 minutes.
+LIMIT=600
+DRY=0; [ "${1:-}" = "--dry-run" ] && { DRY=1; shift; }
+LOG="$HOME/.local/state/download-watch.log"; mkdir -p "$(dirname "$LOG")"
+for f in "$@"; do
+  [ -f "$f" ] || continue
+  case "$f" in *.crdownload|*.part|*.tmp|*.download) continue;; esac
+  # needs a video stream that isn't an attached picture (album art)
+  has_video=$(ffprobe -v error -select_streams v -show_entries stream=codec_type:stream_disposition=attached_pic \
+              -of csv=p=0 "$f" 2>/dev/null | grep -c '^video,0')
+  [ "$has_video" -gt 0 ] || continue
+  dur=$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$f" 2>/dev/null)
+  [[ "$dur" =~ ^[0-9.]+$ ]] || continue
+  if awk -v d="$dur" -v l="$LIMIT" 'BEGIN{exit !(d>l)}'; then
+    if [ $DRY = 1 ]; then printf 'WOULD DELETE (%.0f min): %s\n' "$(awk -v d="$dur" 'BEGIN{print d/60}')" "$f"
+    else rm -f -- "$f" && printf '%s deleted (%.0fs): %s\n' "$(date '+%F %T')" "$dur" "$f" >> "$LOG"; fi
+  fi
+done

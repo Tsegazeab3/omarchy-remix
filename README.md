@@ -84,7 +84,7 @@ A Samsung tablet over ADB (Tailscale or LAN) works as:
 
 ### 6. Files go where I already am
 
-- [`word-online`](bin/word-online): open any local `.docx` in Word for the web. Uploads to OneDrive over Microsoft Graph (one GET + one PUT with curl; rclone only refreshes the token), and never overwrites a copy that was edited online. Lets you keep Office-only coursework on Linux.
+- [`word-online`](bin/word-online): open any local `.docx` in Word for the web. Uploads to OneDrive over Microsoft Graph (one GET + one PUT with curl; rclone only refreshes the token), and never overwrites a copy that was edited online. `word-online --pullfile FILE` brings online edits back home; `word-online --pullfolder .` does it for every Office file under a folder. The old version is backed up first, and if both sides changed you get both files instead of losing one. Lets you keep Office-only coursework on Linux.
 - Google Drive mounted at `~/GoogleDrive` with rclone ([service](config/systemd/user/rclone-gdrive.service)).
 - [`omarchy-menu-dynamic-search`](bin/omarchy-menu-dynamic-search) and the forked menu plugin [`t.menu`](config/omarchy/plugins/t.menu): typing in the Omarchy menu also searches your files (`fd`) and offers web suggestions.
 

@@ -69,7 +69,7 @@ except Exception as e:
 # LAYER 3: Executor (Gemini 3.8 Flash via OpenRouter)
 if route == "CALENDAR":
     print("📅 Layer 3: Executing with Gemini 3.8 Flash...")
-    vault_dir = os.path.join(os.environ.get("OBSIDIAN_VAULT", os.path.expanduser("~/Documents/Obsidian Vault")), "Calendar")
+    vault_dir = os.path.expanduser("~/Documents/Obsidian Vault/Calendar")
     os.makedirs(vault_dir, exist_ok=True)
     
     # Load ONLY the targeted files!

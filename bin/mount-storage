@@ -5,7 +5,7 @@ set -euo pipefail
 UUID="96DC57B5DC578E7D"
 DEV="/dev/disk/by-uuid/$UUID"
 
-TARGET_USER="${SUDO_USER:-$USER}"
+TARGET_USER="${SUDO_USER:-${USER:-t}}"
 TARGET_UID=$(id -u "$TARGET_USER")
 TARGET_GID=$(id -g "$TARGET_USER")
 EXPECTED_MOUNT="/run/media/$TARGET_USER/Storage"

@@ -73,7 +73,7 @@ o.bind("ALT + Alt_R", "Omarchy menu", "omarchy-menu toggle", { release = true })
 -- Local AI Scratchpad (SUPER + A)
 o.bind("SUPER + A", "AI Scratchpad", "omarchy-launch-or-focus-tui --app-id=org.omarchy.ai-scratchpad ai-scratchpad")
 hl.unbind("SUPER + SHIFT + A")
-o.bind("SUPER + SHIFT + A", "AI File Editor", "omarchy-launch-or-focus-tui --app-id=org.omarchy.agy-scratchpad super-fast-order")
+o.bind("SUPER + SHIFT + A", "AI File Editor", "omarchy-launch-or-focus-tui --app-id=org.omarchy.agy-scratchpad $HOME/.local/bin/super-fast-order")
 
 
 -- Disable a default binding without replacing it.

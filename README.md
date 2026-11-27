@@ -139,13 +139,21 @@ config/          mirrors ~/.config
 bin/             mirrors ~/.local/bin
 packages.txt     official-repo packages added on top of Omarchy
 packages-aur.txt AUR packages
-install.sh
+install.sh       put it all on a machine
+sync.sh          pull live changes back into the repo, commit, push
 ```
+
+## Staying in sync
+
+This repo follows my machine. A user timer (`omarchy-remix-sync.timer`, every 15 minutes)
+runs [`sync.sh`](sync.sh), which copies any tracked file that changed in `~/.config` or
+`~/.local/bin` back here, strips home paths, monitor serials and inline API keys, refuses to
+commit anything that still looks like a credential, then commits and pushes.
 
 ## Credits
 
-- [Omarchy](https://github.com/basecamp/omarchy) (MIT). `t.menu` is a fork of its menu plugin.
+- [Omarchy](https://github.com/basecamp/omarchy). `t.menu` is a fork of its menu plugin.
 - [Clockwork](https://github.com/pjgeutjens/omarchy-clockwork) by Pieter Geutjens (MIT). License kept in `t.clockwork/`.
 - [wl-kbptr](https://github.com/moverest/wl-kbptr), [scrcpy](https://github.com/Genymobile/scrcpy), [rclone](https://rclone.org), [Ollama](https://ollama.com).
 
-Everything else: MIT, see [LICENSE](LICENSE).
+Take whatever you want.

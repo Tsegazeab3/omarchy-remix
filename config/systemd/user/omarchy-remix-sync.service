@@ -1,0 +1,6 @@
+[Unit]
+Description=Commit and push live Omarchy config changes to omarchy-remix
+
+[Service]
+Type=oneshot
+ExecStart=%h/Work/omarchy-remix/sync.sh
